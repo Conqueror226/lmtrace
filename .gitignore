@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 results/ablation/
 .DS_Store
+
+# Rebuilt by build_dashboard.py or on first dashboard launch
+web/dashboard-data.js
+dashboard-offline.html

@@ -3,80 +3,62 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LMTrace</title>
-<link rel="stylesheet" href="/dashboard.css">
+<meta name="description" content="Trace recorded Windows telemetry into an explainable, qualified remote-activity claim.">
+<title>LMTrace · Evidence Workspace</title>
+<link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
-<nav class="rail" aria-label="Views">
-  <div class="brand">LMTrace<span class="brand-sub">Remote execution evidence</span></div>
-  <a href="#overview" data-view="overview">Overview</a>
-  <a href="#recordings" data-view="recordings">Recordings</a>
-  <a href="#analyze" data-view="analyze">Analyze a capture</a>
-  <a href="#deep-dive" data-view="deep-dive">Deep dive</a>
-  <p class="rail-note">Runs on this computer. Nothing is sent anywhere.</p>
-</nav>
+<a class="skip-link" href="#main">Skip to workspace</a>
+<aside class="rail">
+  <a class="brand" href="#flow"><span class="brand-mark" aria-hidden="true">L<span>↗</span></span><span>LMTrace<small>Evidence workspace</small></span></a>
+  <p class="rail-label">WORKSPACE</p>
+  <nav aria-label="Workspace views">
+    <a href="#flow" data-view="flow"><span aria-hidden="true">↗</span> Concept flow</a>
+    <a href="#recordings" data-view="recordings"><span aria-hidden="true">▤</span> Recording library</a>
+    <a href="#experiments" data-view="experiments"><span aria-hidden="true">−</span> Evidence removal</a>
+    <a href="#analyze" data-view="analyze"><span aria-hidden="true">＋</span> Analyze a capture</a>
+  </nav>
+  <div class="rail-bottom"><span class="live-dot"></span><strong id="mode-label">Recorded demo</strong><p>Claims stay attached to their evidence.</p><button class="text-button" id="download-project">Download offline project ↗</button></div>
+</aside>
+<main id="main" tabindex="-1">
+  <header class="masthead"><div class="breadcrumbs">LMTRACE <span>/</span> ENGINEERING DEMO</div><div class="environment"><span class="live-dot"></span> OTRF · Recorded lab data</div></header>
+  <section class="intro"><div><p class="eyebrow">TELEMETRY → EXPLAINABLE CLAIM</p><h1 id="page-title">Follow the evidence.</h1><p class="lead" id="page-lead">An event shows what happened. A defensible remote-activity claim shows how the records agree.</p></div><button class="secondary" id="present-button" aria-pressed="false">Presentation view ↗</button></section>
+  <div class="metrics" id="metrics" aria-label="Dataset summary"></div>
+  <p class="evaluation-note">Real recorded Windows events from controlled exercises. Category checks are not detection accuracy or a false-positive rate.</p>
 
-<main id="main">
-  <section id="view-overview" class="view" hidden>
-    <header class="page-head">
-      <h1>Remote execution across <span id="ov-count">14</span> recorded exercises</h1>
-      <p class="lead" id="ov-verdict">Loading the scorecard…</p>
-    </header>
-    <figure class="rack-figure">
-      <div class="rack" id="ov-rack" role="list"></div>
-      <figcaption class="ladder-legend">
-        <span><i class="seg l1"></i>Artifact: recorded on the target, no remote session shown</span>
-        <span><i class="seg l2"></i>Session: tied to a network logon on that host</span>
-        <span><i class="seg l3"></i>Route: that logon matches one connection recorded on both endpoints</span>
-      </figcaption>
-    </figure>
-    <p class="facts" id="ov-facts"></p>
-
-    <h2>Recordings</h2>
-    <p class="section-lead">The expected category comes from each dataset's published title and is read only by the scorer. Outcomes compare technique categories; the sessions, accounts and endpoints are shown for review, not independently verified.</p>
-    <div class="table-wrap"><table class="grid" id="ov-table"></table></div>
-
-    <h2>Evidence removal</h2>
-    <p class="section-lead" id="ov-ablation-lead"></p>
-    <div class="table-wrap"><table class="matrix" id="ov-matrix"></table></div>
+  <section id="view-flow" class="view">
+    <div class="panel case-toolbar"><div class="grow"><label for="case-select">RECORDING</label><select id="case-select"></select></div><div><label for="finding-select">OBSERVATION</label><select id="finding-select"></select></div><div><label for="variant-select">EVIDENCE AVAILABLE</label><select id="variant-select"></select></div></div>
+    <div id="experiment-note" role="status"></div>
+    <div class="flow-heading"><h2>How the concept works</h2><p>A reasoning flow, not a cross-host execution timeline.</p></div>
+    <div id="flow-steps" class="flow-steps" aria-label="Evidence reasoning steps"></div>
+    <div class="flow-layout"><article class="panel stage-panel" id="stage-panel"></article><aside class="panel conclusion-panel" id="conclusion-panel"></aside></div>
+    <div class="flow-navigation"><button class="secondary" id="previous-step">← Previous step</button><p id="step-caption"></p><button class="primary" id="next-step">Next step →</button></div>
+    <section class="panel evidence-panel"><div class="section-head"><div><p class="eyebrow">AUDIT THE CLAIM</p><h2 id="evidence-heading">Records behind this step</h2></div><button class="text-button" id="export-result">Download analysis JSON ↓</button></div><p class="muted" id="evidence-note"></p><div id="evidence-table" class="table-scroll"></div></section>
+    <section id="quality-panel" class="quality-panel"></section>
   </section>
 
   <section id="view-recordings" class="view" hidden>
-    <div class="split">
-      <aside class="picker" id="rec-list" aria-label="Recordings"></aside>
-      <div class="detail" id="rec-detail"></div>
-    </div>
+    <div class="panel library-toolbar"><label class="grow" for="search-recordings"><span>SEARCH RECORDINGS</span><input type="search" id="search-recordings" placeholder="Search a title, technique, or dataset ID"></label><label for="filter-technique"><span>EXERCISE CATEGORY</span><select id="filter-technique"><option value="">All categories</option></select></label></div>
+    <div class="section-head library-head"><h2>14 recordings. One evidence contract.</h2><p id="library-count"></p></div>
+    <div class="recording-grid" id="recording-grid"></div>
+    <div class="panel information"><strong>Expected and observed are separate.</strong><p>The exercise title supplies the expected technique to the scorer. The reconstruction engine sees event records only. Each capture may contain several independently attributed sessions.</p></div>
+  </section>
+
+  <section id="view-experiments" class="view" hidden>
+    <div class="panel information"><p class="eyebrow">TEST THE REASONING</p><h2>Remove evidence. Watch the claim change.</h2><p>Each cell is a fresh Python run with a whole event type withheld. Click a cell to inspect its surviving records and the exact qualified claim. Removing an artifact may change the technique even when route attribution remains.</p></div>
+    <div class="panel matrix-panel"><div class="section-head"><h2>Evidence-removal matrix</h2><span class="tag" id="experiment-count"></span></div><div class="table-scroll" id="experiment-matrix"></div></div>
+    <div class="legend"><span><i class="swatch route"></i>Route · both endpoints</span><span><i class="swatch session"></i>Session · identity joined</span><span><i class="swatch artifact"></i>Artifact · local action</span><span><i class="swatch none"></i>None · no related claim</span><span>— Event type absent</span></div>
+    <p class="muted">The comparison checks surviving principal, artifact and complete route claims against the baseline. This is a robustness check for these removals, not a proof for all possible missing-data patterns.</p>
   </section>
 
   <section id="view-analyze" class="view" hidden>
-    <header class="page-head">
-      <h1>Analyze a capture</h1>
-      <p class="lead">Choose an OTRF-style export: one Windows event per line as JSON, or a ZIP containing such files. Both engines run here, in memory; the file is not saved.</p>
-    </header>
-    <label class="drop" id="drop">
-      <input type="file" id="file" accept=".json,.jsonl,.ndjson,.zip">
-      <span class="drop-title">Drop a file here or choose one</span>
-      <span class="drop-sub">.json, .jsonl, .ndjson or .zip, up to 100 MB</span>
-    </label>
-    <p class="status" id="an-status" role="status"></p>
-    <div id="an-result"></div>
+    <div id="hosted-analysis-note" class="panel information" hidden><p class="eyebrow">LOCAL ANALYSIS</p><h2>Use the same dashboard with your own capture.</h2><p>This web version explores Python-computed results from the bundled recordings. To analyze a new capture, download the offline project and run <code>python3 dashboard.py</code>. The local dashboard runs both engines with Python's standard library.</p><button class="primary" id="download-local">Download offline project ↓</button><p class="muted">Or open <code>dashboard-offline.html</code> directly to explore the recordings without starting a server.</p></div>
+    <div id="local-analysis" hidden><div class="panel information"><h2>Analyze a capture</h2><p>Choose a Windows NDJSON export or a ZIP containing event files. Both Python engines run on this computer. Uploads stay in memory and are not saved.</p></div><label class="drop-zone" id="drop-zone"><input id="capture-file" type="file" accept=".json,.jsonl,.ndjson,.zip"><span class="upload-symbol" aria-hidden="true">↑</span><strong>Choose a capture or drop it here</strong><span>.json, .jsonl, .ndjson or .zip · up to 100 MB</span></label><p id="upload-status" role="status"></p><div id="upload-result"></div></div>
   </section>
-
-  <section id="view-deep-dive" class="view" hidden>
-    <header class="page-head">
-      <h1>Deep dive: one service-creation session</h1>
-      <p class="lead">The strict contract, record by record. <a href="/deep-dive" target="_blank" rel="noopener">Open in its own tab</a></p>
-    </header>
-    <iframe id="deep-frame" title="Deep-dive report" loading="lazy"></iframe>
-  </section>
+  <footer><span>LMTrace · Evidence first.</span><span id="revision-label"></span></footer>
 </main>
-
-<dialog id="record-dialog" aria-labelledby="record-title">
-  <div class="dialog-head"><h3 id="record-title">Original record</h3><button type="button" id="record-close">Close</button></div>
-  <p class="mono small" id="record-ref"></p>
-  <p class="mono small" id="record-hash"></p>
-  <pre id="record-json"></pre>
-</dialog>
-<script src="/dashboard.js"></script>
+<dialog id="record-dialog" aria-labelledby="record-title"><div class="dialog-head"><div><p class="eyebrow">SOURCE RECORD</p><h2 id="record-title">Original Windows event</h2></div><button class="secondary" id="record-close">Close ✕</button></div><p id="record-ref" class="mono"></p><div id="record-facts"></div><p class="hash-label">SHA-256 of original NDJSON line (including its original line ending)</p><p class="hash-value mono" id="record-hash"></p><div class="record-controls"><button class="secondary" id="record-format">Show exact source line</button><button class="secondary" id="record-save">Download source line ↓</button><span id="record-verification" role="status"></span></div><pre id="record-json" tabindex="0"></pre><p class="muted">Formatted JSON is for reading. The exact source line preserves the bytes used for the displayed hash. Large integers are retained as text.</p></dialog>
+<script src="dashboard-data.js"></script>
+<script src="dashboard.js"></script>
 </body>
 </html>

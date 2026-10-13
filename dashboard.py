@@ -1,13 +1,13 @@
-"""LMTrace local dashboard. Run: python3 dashboard.py   (then open the printed URL)
+"""LMTrace evidence dashboard. Run: python3 dashboard.py   (then open the printed URL)
 
 A small web app over the same engines the reports use. Python standard library
 only; it works offline and never sends data anywhere.
 
 Views
-  Overview          scorecard across the 14 bundled recordings, with the ablation matrix
-  Recordings        every finding of one recording, with its evidence records
+  Concept flow      recorded input to artifact, session, route, and qualified claim
+  Recording library inspect all 14 recordings and the known attribution gaps
+  Evidence removal  Python-computed variants, not a JavaScript detector
   Analyze a capture run both engines on an OTRF NDJSON or ZIP export you choose
-  Deep dive         the record-by-record service-creation report
 
 Safety choices, because a local server is still a server:
   - binds to 127.0.0.1 only;
@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 import zipfile
 
-from analyze import correlate, parse_records, sha256
+from analyze import correlate, evidence, parse_records, sha256, verify_sources
 from reconstruct import LEVELS, LEVEL_WORDING, TECHNIQUES, reconstruct
 from scorecard import CATALOG, load, run as run_scorecard
 
@@ -45,6 +45,7 @@ MAX_UNCOMPRESSED_BYTES = 600 * 1024 * 1024
 STATIC = {"/": ("dashboard.html", "text/html; charset=utf-8"),
           "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
           "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8")}
+STATIC["/dashboard-data.js"] = ("dashboard-data.js", "text/javascript; charset=utf-8")
 STRICT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
               "connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 # The generated deep-dive report keeps its inline script; it is our own static file.
@@ -86,6 +87,7 @@ def code_hashes() -> dict:
 
 def cached_scorecard() -> dict:
     """Reuse results/scorecard.json when it was produced by this exact code; otherwise recompute."""
+    verify_sources(ROOT)
     path = RESULTS / "scorecard.json"
     if path.is_file():
         saved = json.loads(path.read_bytes())
@@ -118,13 +120,24 @@ def read_upload(name: str, body: bytes) -> tuple[list[dict], dict]:
             raise UploadError("The ZIP contains no .json, .jsonl or .ndjson file.")
         if sum(i.file_size for i in wanted) > MAX_UNCOMPRESSED_BYTES:
             raise UploadError("The ZIP expands beyond the 600 MB limit.")
-        for info in wanted:
-            members.append((Path(info.filename).name, bundle.read(info)))
+        if len({i.filename for i in wanted}) != len(wanted):
+            raise UploadError("The ZIP contains duplicate event-file names; references would be ambiguous.")
+        try:
+            for info in wanted:
+                # Preserve directories so a/events.json and b/events.json have distinct references.
+                members.append((info.filename, bundle.read(info)))
+        except (zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+            raise UploadError("An event file in the ZIP could not be read (damaged or encrypted archive).") from error
+        finally:
+            bundle.close()
     else:
         members.append((Path(name).name or "upload.json", body))
     records, integrity = [], {"files": [], "issues": {}}
     for filename, data in members:
         rows, info = parse_records(data, filename)
+        lines = data.splitlines(keepends=True)
+        for record in rows:
+            record["_original_line"] = lines[record["_line"] - 1]
         records += rows
         integrity["files"].append({"name": filename, "sha256": info["input_sha256"],
                                    "lines": info["input_lines"], "records": info["unique_records"]})
@@ -143,15 +156,14 @@ def analyze_upload(name: str, body: bytes) -> tuple[dict, dict]:
     return {"name": Path(name).name, "integrity": integrity, "records": len(records),
             "result": general,
             "strict": {"status": strict["status"], "counts": strict["counts"],
-                       "observations": [{"logon_id": o["identity"]["logon_id"], "status": o["status"],
-                                         "checks": o["checks"]} for o in strict["observations"]],
+                       "observations": [{**o, "logon_id": o["identity"]["logon_id"]} for o in strict["observations"]],
                        "gaps": strict["gaps"][:50]}}, {r["_ref"]: r for r in records}
 
 
 # ------------------------------------------------------------------- server
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LMTrace/1.0"
+    server_version = "EvidenceDashboard/1.0"
     state: State = None  # set in serve()
 
     def log_message(self, fmt, *args):  # keep the terminal readable during a demo
@@ -201,6 +213,8 @@ class Handler(BaseHTTPRequestHandler):
             data = self.state.overview()
             return self.json(HTTPStatus.OK, {**data, "level_wording": LEVEL_WORDING, "level_rank": LEVELS,
                                              "technique_names": TECHNIQUES})
+        if url.path == "/api/mode":
+            return self.json(HTTPStatus.OK, {"local_analysis": True})
         if url.path == "/api/record":
             return self.record(query)
         return self.error(HTTPStatus.NOT_FOUND, "Not found.")
@@ -216,7 +230,17 @@ class Handler(BaseHTTPRequestHandler):
         record = lookup.get(ref)
         if record is None:
             return self.error(HTTPStatus.NOT_FOUND, "No record with that reference in this source.")
-        return self.json(HTTPStatus.OK, {"ref": ref, "sha256": record["_sha256"],
+        if source == "upload":
+            original_line = record["_original_line"]
+        else:
+            with zipfile.ZipFile(ROOT / "data/source" / f"{source}.zip") as bundle:
+                original_line = bundle.read(record["_file"]).splitlines(keepends=True)[record["_line"] - 1]
+        return self.json(HTTPStatus.OK, {**evidence(record),
+                                         "record_number": str(record["RecordNumber"]) if record.get("RecordNumber") is not None else None,
+                                         "sha256": record["_sha256"],
+                                         "raw_line": original_line.decode("utf-8"),
+                                         "fields": {k: str(v) for k, v in raw(record).items()
+                                                    if isinstance(v, (str, int, float, bool)) or v is None},
                                          "json": json.dumps(raw(record), indent=2, ensure_ascii=False)})
 
     def do_POST(self):
@@ -230,8 +254,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.error(HTTPStatus.BAD_REQUEST, "Missing file length.")
         if length > MAX_UPLOAD_BYTES:
             return self.error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Files up to 100 MB can be analyzed.")
+        if length <= 0:
+            return self.error(HTTPStatus.BAD_REQUEST, "A positive file length is required.")
         body = self.rfile.read(length)
-        name = self.headers.get("X-Filename", "upload.json")[:200]
+        from urllib.parse import unquote
+        name = unquote(self.headers.get("X-Filename", "upload.json")[:600])[:200]
         try:
             payload, records = analyze_upload(name, body)
         except UploadError as error:
@@ -255,6 +282,19 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://127.0.0.1:{server.server_port}/"
     print("Preparing the scorecard (a few seconds the first time)...")
     Handler.state.overview()
+    data_path = WEB / "dashboard-data.js"
+    try:
+        embedded = json.loads(data_path.read_text().removeprefix("window.EVIDENCE_DATA=").rstrip(";\n"))
+        fresh = embedded.get("engine_sha256") == code_hashes()
+    except (OSError, ValueError):
+        fresh = False
+    if not fresh:
+        from build_dashboard import data_script, export
+        print("Rebuilding the browser snapshot for the current engine code...")
+        data_path.write_text(data_script(export()))
+    if not fresh or not (ROOT / "dashboard-offline.html").is_file():
+        from build_dashboard import standalone
+        standalone(WEB, ROOT / "dashboard-offline.html")
     print(f"Dashboard: {url}   (Ctrl+C to stop; nothing leaves this computer)")
     if not args.no_browser:
         webbrowser.open(url)

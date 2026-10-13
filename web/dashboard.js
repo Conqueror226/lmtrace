@@ -1,220 +1,308 @@
-"use strict";
-// Presentation only: every number and decision comes from the Python engines.
-
-const $ = (id) => document.getElementById(id);
-const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const RANK = { NONE: 0, ARTIFACT: 1, SESSION: 2, ROUTE: 3 };
-const LEVEL_NAME = { NONE: "None", ARTIFACT: "Artifact", SESSION: "Session", ROUTE: "Route" };
-const OUTCOME = { OBSERVED: "Observed", NOT_OBSERVED: "Not observed", ADDITIONAL: "Additional category" };
-const SHORT = {
-  SERVICE_INSTALL: "Service install", SERVICE_CONTROL_ACCESS: "Service control access", TASK_CREATE: "Scheduled task",
-  WMI_EXECUTION: "WMI execution", WINRM_SESSION: "PowerShell remoting", DCOM_EXECUTION: "DCOM execution",
-  REMOTE_PROCESS: "Remote process",
-};
-// Short names for the overview rack; the full title is always one click away.
-const RACK_NAME = {
-  covenant_sharpsc_create_dcerpc_smb_svcctl: "SharpSC create", empire_psexec_dcerpc_tcp_svcctl: "PsExec",
-  empire_smbexec_dcerpc_smb_svcctl: "SMBExec", covenant_sharpsc_query_dcerpc_smb_svcctl: "SharpSC query",
-  covenant_sc_query_dcerpc_smb_svcctl: "sc.exe query", covenant_sharpsc_start_dcerpc_smb_svcctl: "SharpSC start",
-  covenant_sharpsc_stop_dcerpc_smb_svcctl: "SharpSC stop", schtask_create: "Scheduled task",
-  covenant_sharpwmi_create_dcerpc_wmi: "SharpWMI", empire_wmi_dcerpc_wmi_IWbemServices_ExecMethod: "Invoke WMI",
-  covenant_psremoting_command: "Remoting command", empire_psremoting_stager: "Invoke remoting",
-  covenant_dcom_executeexcel4macro_allowed: "DCOM Excel", empire_dcom_shellwindows_stager: "DCOM Shell\u00adWindows",
-};
-const shortHost = (h) => String(h ?? "?").split(".")[0];
-let overview = null;
-
-function ladder(level, withLabel = false) {
-  const lv = RANK[level] || 0;
-  const meter = `<span class="ladder lv${lv}" role="img" aria-label="Evidence level: ${LEVEL_NAME[level] || "None"}"><i></i><i></i><i></i></span>`;
-  return withLabel ? `${meter}<span class="ladder-label">${LEVEL_NAME[level] || "None"}</span>` : meter;
-}
-
-async function getJSON(url, options) {
-  const response = await fetch(url, options);
-  const body = await response.json().catch(() => ({ error: `The server answered ${response.status}.` }));
-  if (!response.ok) throw new Error(body.error || `The server answered ${response.status}.`);
-  return body;
-}
-
-// ------------------------------------------------------------------ routing
-function show(view, arg) {
-  for (const section of document.querySelectorAll(".view")) section.hidden = section.id !== `view-${view}`;
-  for (const link of document.querySelectorAll(".rail a")) {
-    link.toggleAttribute("aria-current", link.dataset.view === view);
-    if (link.dataset.view === view) link.setAttribute("aria-current", "page");
+'use strict';
+(() => {
+  const DATA = window.EVIDENCE_DATA;
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const number = n => Number(n || 0).toLocaleString('en-US');
+  const rank = {NONE:0, ARTIFACT:1, SESSION:2, ROUTE:3};
+  const names = {SERVICE_INSTALL:'Service installation',SERVICE_CONTROL_ACCESS:'SCM pipe access',TASK_CREATE:'Scheduled task creation',WMI_EXECUTION:'WMI process creation',WINRM_SESSION:'PowerShell remoting host',DCOM_EXECUTION:'DCOM process creation',REMOTE_PROCESS:'Process creation'};
+  const events = {4624:'Network logon',5145:'Share / pipe access',4697:'Service installation',4698:'Task creation',1:'Process creation',3:'Network connection'};
+  const steps = [
+    {name:'Collect',short:'Original records',eyebrow:'01 / RECORDED INPUT'},
+    {name:'Observe',short:'Local artifact',eyebrow:'02 / WHAT HAPPENED'},
+    {name:'Attribute',short:'Session identity',eyebrow:'03 / WHICH SESSION'},
+    {name:'Corroborate',short:'Both endpoints',eyebrow:'04 / WHICH ROUTE'},
+    {name:'Qualify',short:'Bounded conclusion',eyebrow:'05 / WHAT WE CAN SAY'}
+  ];
+  if (!DATA || DATA.schema_version !== 1) {
+    $('stage-panel').innerHTML = '<h2>Dashboard data is unavailable.</h2><p>Run <code>python3 build_dashboard.py</code> in the project folder and reload this page.</p>';
+    return;
   }
-  if (view === "recordings" && overview) renderRecording(arg || overview.rows[0].archive);
-  if (view === "deep-dive" && !$("deep-frame").src) $("deep-frame").src = "/deep-dive";
-  window.scrollTo(0, 0);
-}
-function route() {
-  const [view, arg] = location.hash.replace(/^#/, "").split("/");
-  show(["overview", "recordings", "analyze", "deep-dive"].includes(view) ? view : "overview", arg && decodeURIComponent(arg));
-}
-window.addEventListener("hashchange", route);
-
-// ----------------------------------------------------------------- overview
-function routeText(findings) {
-  const f = findings.find((x) => RANK[x.level] >= 2);
-  if (!f) return '<span class="muted">—</span>';
-  if (f.route) return `${esc(shortHost(f.route.source_host))} → ${esc(shortHost(f.route.target_host))}<span class="sub">TCP ${esc(f.route.target_port)}</span>`;
-  return `? → ${esc(shortHost(f.target_host))}<span class="sub">source not recorded</span>`;
-}
-
-function renderOverview() {
-  const s = overview.summary;
-  $("ov-count").textContent = s.recordings;
-  $("ov-verdict").textContent = `Expected technique category observed in ${s.expected_observed} of ${s.recordings}; ` +
-    (s.additional_categories ? `additional remote categories in ${s.additional_categories}.` : "no additional remote technique categories reported.");
-  $("ov-rack").innerHTML = overview.rows.map((r) =>
-    `<a role="listitem" href="#recordings/${encodeURIComponent(r.archive)}" title="${esc(r.title)}: ${LEVEL_NAME[r.level]}">${ladder(r.level)}<span class="name">${esc(RACK_NAME[r.archive] || r.title)}</span></a>`).join("");
-  $("ov-facts").innerHTML = `<span><b>${s.records.toLocaleString()}</b> original records</span>` +
-    `<span><b>${s.route_level}</b> with the source host corroborated by records on both endpoints</span>` +
-    `<span><b>${s.ablation_monotonic} of ${s.ablation_runs}</b> whole-event-type removals produced no new or stronger claim</span>`;
-  $("ov-table").innerHTML = `<thead><tr><th>Exercise</th><th>Performed</th><th>Engine's remote claim</th><th>Evidence</th><th>Source → target</th><th>Expected category</th></tr></thead><tbody>` +
-    overview.rows.map((r) => `<tr data-archive="${esc(r.archive)}" tabindex="0">
-      <td>${esc(r.title)}<span class="sub">${esc(r.dataset_id)}, ${r.result.counts.records.toLocaleString()} records</span></td>
-      <td>${esc(SHORT[r.expected])}</td>
-      <td>${r.result.remote_techniques.map((t) => esc(SHORT[t])).join("<br>") || '<span class="muted">None</span>'}</td>
-      <td>${ladder(r.level, true)}</td><td>${routeText(r.result.findings)}</td>
-      <td class="out-${r.outcome.toLowerCase()}">${OUTCOME[r.outcome]}</td></tr>`).join("") + "</tbody>";
-  $("ov-ablation-lead").textContent = `Each column withholds one whole event type and reruns the engine (${s.ablation_runs} runs). ` +
-    "A surviving claim passes only if the original run already made it with the same session, principal, artifact records and route, " +
-    "at the same or a higher level. This holds for these removals; it is not a proof for every possible removal.";
-  const head = overview.ablations.map((a) => `<th>${esc(a)}</th>`).join("");
-  $("ov-matrix").innerHTML = `<thead><tr><th></th>${head}</tr></thead><tbody>` + overview.rows.map((r) =>
-    `<tr><th class="row">${esc(r.title)}<span class="sub">baseline: ${LEVEL_NAME[r.level].toLowerCase()}</span></th>` +
-    overview.ablations.map((a) => {
-      const c = r.ablation[a];
-      if (!c.removed) return '<td class="cell-na" title="Not present in this recording">·</td>';
-      const before = new Set(r.result.remote_techniques), after = new Set(c.techniques || []);
-      const gained = [...after].filter((t) => !before.has(t)), lost = [...before].filter((t) => !after.has(t));
-      const change = after.size && gained.length ? `now ${gained.map((t) => SHORT[t].toLowerCase()).join(", ")}`
-        : after.size && lost.length ? `lost ${lost.map((t) => SHORT[t].toLowerCase()).join(", ")}` : "";
-      return `<td class="${c.monotonic ? `cell-${c.level}` : "cell-bad"}" title="${c.removed} records withheld">${LEVEL_NAME[c.level]}${change ? `<span class="change">${esc(change)}</span>` : ""}</td>`;
-    }).join("") + "</tr>").join("") + "</tbody>";
-}
-$("ov-table").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-archive]"); if (tr) location.hash = `recordings/${encodeURIComponent(tr.dataset.archive)}`; });
-$("ov-table").addEventListener("keydown", (e) => { const tr = e.target.closest("tr[data-archive]"); if (tr && e.key === "Enter") location.hash = `recordings/${encodeURIComponent(tr.dataset.archive)}`; });
-
-// ------------------------------------------------------------ findings view
-function detailLines(d) {
-  if (d.service) return `Service <code>${esc(d.service)}</code> with binary <code>${esc(d.binary)}</code>`;
-  if (d.task) return `Task <code>${esc(d.task)}</code>`;
-  if (d.image) return `<code>${esc(d.image)}</code> started by <code>${esc(d.parent)}</code>`;
-  if (d.pipe) return `Access check on <code>${esc(d.pipe)}</code>`;
-  return "";
-}
-
-// "file.json:L972" -> "Line 972"; the full reference stays in the tooltip and the viewer.
-const refLabel = (ref) => { const m = /:L(\d+)$/.exec(ref); return m ? `Line ${Number(m[1]).toLocaleString()}` : ref; };
-
-function findingCard(f, source) {
-  const r = f.route;
-  const routeLine = r
-    ? `<div class="route">${esc(shortHost(r.source_host))} ${esc(r.source_ip)}:${esc(r.source_port)} → ${esc(shortHost(r.target_host))} ${esc(r.target_ip)}:${esc(r.target_port)}</div>`
-    : `<p class="gap">${esc(f.route_gap)}</p>`;
-  const refs = [...new Set([...f.evidence.map((e) => e.ref), ...(f.alias_refs || [])])];
-  return `<article class="finding">${ladder(f.level)}<div class="finding-body">
-    <h3>${esc(f.label)}</h3>
-    <p class="muted small">Account <code>${esc(f.account)}</code>, logon <code>${esc(f.logon_id)}</code>, SID <code>${esc(f.principal && f.principal.sid)}</code></p>
-    ${routeLine}
-    ${f.details.map((d) => `<p>${detailLines(d)}</p>`).join("")}
-    ${f.follow_on && f.follow_on.length ? `<p class="small">Then, in the same session: ${f.follow_on.map((p) => `<code>${esc(p)}</code>`).join(", ")}</p>` : ""}
-    ${(f.notes || []).map((n) => `<p class="note">${esc(n)}</p>`).join("")}
-    <div class="refs">${refs.map((ref) => `<button type="button" class="ref" data-source="${esc(source)}" data-ref="${esc(ref)}" title="${esc(ref)}">${esc(refLabel(ref))}</button>`).join("")}</div>
-  </div></article>`;
-}
-
-function issueList(title, items, source) {
-  if (!items.length) return "";
-  return `<details class="panel"><summary>${esc(title)} (${items.length})</summary>${items.map((g) =>
-    `<p>${esc(g.reason)}</p><div class="refs">${g.evidence.map((e) => `<button type="button" class="ref" data-source="${esc(source)}" data-ref="${esc(e.ref)}" title="${esc(e.ref)}">${esc(refLabel(e.ref))}</button>`).join("")}</div>`).join("")}</details>`;
-}
-
-function qualityLine(q) {
-  const unusable = Object.values(q.unusable_identifiers || {}).reduce((a, b) => a + b, 0);
-  return `Input checks: ${q.conflicting_event_identities} contradictory event versions, ${unusable} relevant records with unusable identifiers, ` +
-    `${q.flow_records_unusable_for_routes} network records unusable for routes. ${q.screening.note}`;
-}
-
-function resultBody(result, source) {
-  const findings = result.findings.length
-    ? result.findings.map((f) => findingCard(f, source)).join("")
-    : '<div class="panel"><p>No finding. The engine does not link actions it cannot show to a session.</p></div>';
-  return findings +
-    `<p class="muted small">${esc(qualityLine(result.quality))}</p>` +
-    issueList("Contradictions", result.conflicts || [], source) +
-    issueList("Rejected records (examples)", result.quality.rejected_examples || [], source) +
-    issueList("Session gaps", result.gaps || [], source);
-}
-
-function renderRecording(archive) {
-  const row = overview.rows.find((r) => r.archive === archive) || overview.rows[0];
-  $("rec-list").innerHTML = overview.rows.map((r) =>
-    `<button type="button" data-archive="${esc(r.archive)}" ${r.archive === row.archive ? 'aria-current="true"' : ""}>${ladder(r.level)}<span>${esc(r.title)}</span></button>`).join("");
-  $("rec-detail").innerHTML = `<h1>${esc(row.title)}</h1>
-    <p class="meta"><a href="${esc(row.documentation)}" target="_blank" rel="noopener">${esc(row.dataset_id)}</a>, ${row.result.counts.records.toLocaleString()} records.
-    Performed: ${esc(SHORT[row.expected])}. Expected category: <span class="out-${row.outcome.toLowerCase()}">${OUTCOME[row.outcome]}</span>.</p>
-    ${row.known_limit ? `<p class="limit"><strong>Why it is not observed:</strong> ${esc(row.known_limit)}</p>` : ""}
-    ${resultBody(row.result, row.archive)}`;
-}
-$("rec-list").addEventListener("click", (e) => { const b = e.target.closest("button[data-archive]"); if (b) location.hash = `recordings/${encodeURIComponent(b.dataset.archive)}`; });
-
-// ----------------------------------------------------------------- analyze
-function strictPanel(strict) {
-  const status = { REMOTE_SERVICE_INSTALLATION: "Remote service installation supported", REMOTE_SERVICE_ACCESS: "Service-control access only", INSUFFICIENT_EVIDENCE: "No complete service session" }[strict.status] || strict.status;
-  return `<div class="panel"><h3>Strict service contract: ${esc(status)}</h3>
-    <p class="small muted">${strict.counts.supported_sessions} supported sessions, ${strict.counts.supported_installations} linked installations, ${strict.counts.service_install_events} installation events recorded.</p>
-    ${strict.observations.map((o) => `<details><summary>Session <code>${esc(o.logon_id)}</code></summary>${o.checks.map((c) =>
-      `<div class="check"><span class="pill ${esc(c.result)}">${esc({ SUPPORTED: "Supported", NOT_OBSERVED: "Not observed", UNKNOWN: "Unknown" }[c.result])}</span><span><strong>${esc(c.check)}</strong><br>${esc(c.detail)}</span></div>`).join("")}</details>`).join("")}
-  </div>`;
-}
-
-async function analyzeFile(file) {
-  if (!file) return;
-  const status = $("an-status");
-  status.className = "status";
-  status.textContent = `Analyzing ${file.name} (${(file.size / 1048576).toFixed(1)} MB)…`;
-  $("an-result").innerHTML = "";
-  try {
-    const result = await getJSON("/api/analyze", { method: "POST", headers: { "X-Filename": file.name }, body: file });
-    const files = result.integrity.files.map((f) => `${esc(f.name)} (${f.records.toLocaleString()} records, SHA-256 <code>${esc(f.sha256.slice(0, 16))}…</code>)`).join("; ");
-    status.textContent = `Analyzed ${result.records.toLocaleString()} records. Strongest evidence: ${LEVEL_NAME[result.result.max_level] || "None"}.`;
-    $("an-result").innerHTML = `<p class="small muted">${files}</p>
-      <h2>Remote activity</h2>${resultBody(result.result, "upload")}
-      <h2>Service creation, strict contract</h2>${strictPanel(result.strict)}`;
-  } catch (error) {
-    status.className = "status error";
-    status.textContent = error.message;
+  const state = {caseIndex:0, findingIndex:0, variant:'baseline', step:0, view:'flow', local:false, uploaded:null, record:null, exact:false};
+  const row = () => DATA.rows[state.caseIndex];
+  const variant = () => row().variants[state.variant]?.result ? row().variants[state.variant] : row().variants.baseline;
+  const baselineFinding = () => row().result.findings[state.findingIndex] || null;
+  const sameSession = (a,b) => a && b && String(a.target_host).toLowerCase() === String(b.target_host).toLowerCase() && a.logon_id === b.logon_id;
+  function currentFinding() {
+    const base = baselineFinding();
+    if (!base) return null;
+    const findings = variant().result.findings;
+    const overlap = f => (f.artifact_refs || []).some(r => (base.artifact_refs || []).includes(r));
+    return findings.find(f => sameSession(f,base) && f.technique === base.technique && overlap(f))
+      || findings.find(f => sameSession(f,base) && overlap(f))
+      || findings.find(f => sameSession(f,base) && f.technique === base.technique)
+      || findings.find(f => sameSession(f,base)) || null;
   }
-}
-$("file").addEventListener("change", (e) => analyzeFile(e.target.files[0]));
-const drop = $("drop");
-["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
-["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", (e) => analyzeFile(e.dataTransfer.files[0]));
-
-// ----------------------------------------------------------- record viewer
-document.addEventListener("click", async (e) => {
-  const b = e.target.closest("button.ref");
-  if (!b) return;
-  $("record-title").textContent = "Original record";
-  $("record-ref").textContent = b.dataset.ref;
-  $("record-hash").textContent = "";
-  $("record-json").textContent = "Loading…";
-  $("record-dialog").showModal();
-  try {
-    const r = await getJSON(`/api/record?source=${encodeURIComponent(b.dataset.source)}&ref=${encodeURIComponent(b.dataset.ref)}`);
-    $("record-hash").textContent = `SHA-256 of the original line: ${r.sha256}`;
-    $("record-json").textContent = r.json;
-  } catch (error) {
-    $("record-json").textContent = error.message;
+  const badge = (level, label=level) => `<span class="tag ${esc(String(level).toLowerCase())}">${esc(label)}</span>`;
+  const fact = (label, value, mono=false) => `<div class="fact"><span class="fact-label">${esc(label)}</span><span class="fact-value${mono?' mono':''}">${esc(value ?? 'Unavailable')}</span></div>`;
+  const refShort = ref => `Line ${String(ref).split(':L').pop()}`;
+  function referenceButton(ref, source=row().archive, label='') {
+    return `<button class="record-link" data-ref="${esc(ref)}" data-source="${esc(source)}">${esc(label || refShort(ref))} ↗</button>`;
   }
-});
-$("record-close").addEventListener("click", () => $("record-dialog").close());
-
-// -------------------------------------------------------------------- start
-getJSON("/api/overview").then((data) => { overview = data; renderOverview(); route(); })
-  .catch((error) => { $("ov-verdict").textContent = `The scorecard could not be loaded: ${error.message}`; route(); });
+  function recordsFor(f) {
+    if (!f) return [];
+    const refs = [...(f.evidence || []).map(e=>e.ref), ...(f.alias_refs || [])];
+    return [...new Set(refs)].map(ref => row().record_lookup[ref]).filter(Boolean);
+  }
+  function focusRecords(f) {
+    const records = recordsFor(f);
+    if (state.step === 1) return records.filter(r=>(f.artifact_refs || []).includes(r.ref));
+    if (state.step === 2) return records.filter(r=>String(r.event_id)==='4624' || (f.artifact_refs || []).includes(r.ref) || (f.alias_refs || []).includes(r.ref));
+    if (state.step === 3) return records.filter(r=>String(r.event_id)==='3' || String(r.event_id)==='4624');
+    return records;
+  }
+  function pickDefaultFinding() {
+    const findings = row().result.findings;
+    const preferred = findings.findIndex(f=>f.technique===row().expected && rank[f.level]>=2);
+    state.findingIndex = preferred>=0 ? preferred : 0;
+  }
+  function setCase(index, v='baseline') {
+    state.caseIndex = Math.max(0,Math.min(DATA.rows.length-1,index));
+    state.variant = row().variants[v]?.result ? v : 'baseline';
+    pickDefaultFinding();
+    renderFlow();
+  }
+  function initialize() {
+    const s = DATA.summary;
+    $('metrics').innerHTML = [
+      [number(s.recordings),'Recorded captures','6 exercise categories'],
+      [number(s.records),'Windows events','Original inputs, hash checked'],
+      [`${s.expected_observed}<em> / ${s.recordings}</em>`,'Expected categories observed','1 explained coverage gap'],
+      [`${s.ablation_monotonic}<em> / ${s.ablation_runs}</em>`,'Removal checks passed','Whole event types withheld']
+    ].map(([value,label,sub])=>`<div class="metric"><div class="metric-value">${value}</div><div class="metric-label"><strong>${esc(label)}</strong>${esc(sub)}</div></div>`).join('');
+    $('case-select').innerHTML = DATA.rows.map((r,i)=>`<option value="${i}">${esc(r.title)}</option>`).join('');
+    $('variant-select').innerHTML = '<option value="baseline">Baseline · all records</option>' + DATA.ablations.map(a=>`<option value="${esc(a)}">Remove ${esc(a)}</option>`).join('');
+    const unique = [...new Set(DATA.rows.map(r=>r.expected))];
+    $('filter-technique').innerHTML += unique.map(t=>`<option value="${esc(t)}">${esc(names[t])}</option>`).join('');
+    $('revision-label').textContent = `OTRF / Security-Datasets · revision ${DATA.revision.slice(0,12)}`;
+    $('experiment-count').textContent = `${s.ablation_runs} computed removals`;
+    renderMatrix();
+    pickDefaultFinding();
+    navigate();
+    if (location.protocol !== 'file:') {
+      fetch('api/mode',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(mode=>{
+        state.local=!!mode?.local_analysis;
+        $('mode-label').textContent=state.local?'Local Python engine':'Recorded demo';
+        if(state.local){$('download-project').textContent='Local project ready · no pip';$('download-project').disabled=true;}
+        renderAnalyze();
+      }).catch(()=>renderAnalyze());
+    } else { $('download-project').textContent='Standalone · works offline';$('download-project').disabled=true;renderAnalyze(); }
+  }
+  function renderFlow() {
+    const r = row(), v = variant(), f = currentFinding(), base = baselineFinding();
+    $('case-select').value = String(state.caseIndex);
+    $('finding-select').innerHTML = r.result.findings.length ? r.result.findings.map((item,i)=>`<option value="${i}">${esc(names[item.technique] || item.technique)} · ${esc(item.logon_id || 'no session')}</option>`).join('') : '<option value="0">No supported observation</option>';
+    $('finding-select').value = String(state.findingIndex);
+    $('finding-select').disabled = !r.result.findings.length;
+    for (const option of $('variant-select').options) {
+      if (option.value !== 'baseline') option.disabled = !r.variants[option.value]?.removed;
+    }
+    $('variant-select').value = state.variant;
+    $('experiment-note').innerHTML = state.variant !== 'baseline' ? `<div class="notice"><span aria-hidden="true">−</span><div class="grow"><strong>${esc(state.variant)} withheld.</strong> ${number(v.removed)} records removed from the full capture. The remaining records were analyzed again by both Python engines.${base&&(!f||f.technique!==base.technique)?`<br>The selected ${esc(names[base.technique])} claim no longer survives; ${f?esc(names[f.technique])+' remains in this session.':'no related finding remains.'}`:''}</div><button class="secondary" data-action="reset">Restore baseline</button></div>` : '';
+    const availability = [true,!!f,rank[f?.level]>=2,!!f?.route,true];
+    $('flow-steps').innerHTML = steps.map((s,i)=>`<button class="step ${i===state.step?'active':''} ${availability[i]?'':'missing'}" data-step="${i}" aria-pressed="${i===state.step}"><span class="step-number">${i+1}</span><strong>${s.name}</strong><small>${availability[i]?esc(s.short):'Evidence unavailable'}</small></button>`).join('');
+    renderStage(f);
+    renderConclusion(f);
+    renderEvidence(f);
+    renderQuality(v.result);
+    $('previous-step').disabled=state.step===0;
+    $('next-step').disabled=state.step===4;
+    $('next-step').textContent=state.step===4?'Flow complete ✓':'Next step →';
+    $('step-caption').textContent=`Step ${state.step+1} of 5 · ${steps[state.step].short}`;
+  }
+  function stageShell(title, description, content, status, note='') {
+    $('stage-panel').innerHTML = `<p class="eyebrow">${steps[state.step].eyebrow}</p><div class="stage-title-row"><h2>${esc(title)}</h2>${status || ''}</div><p class="stage-description">${esc(description)}</p>${content}${note?`<p class="stage-footnote">${esc(note)}</p>`:''}`;
+  }
+  function renderStage(f) {
+    const r=row(), v=variant();
+    const all=recordsFor(f), artifact=all.find(e=>(f?.artifact_refs||[]).includes(e.ref)), logon=all.find(e=>String(e.event_id)==='4624');
+    const fields=artifact?.fields||{}, login=logon?.fields||{};
+    if (state.step===0) {
+      stageShell('Start with the original capture.','The engines consume Windows event records, not the exercise name. Every cited observation keeps a file, line number, and hash back to its source.',
+        `<div class="fact-grid">${fact('Capture',r.dataset_id)}${fact('Available records',number(v.result.counts.records))}${fact('Publisher',DATA.publisher)}${fact('Source revision',DATA.revision.slice(0,12),true)}</div><p class="muted">${esc(DATA.data_kind)}</p><p>${r.source?.url?`<a class="text-button" href="${esc(r.source.url)}" target="_blank" rel="noopener">Open the pinned original ZIP ↗</a>`:''}</p>`,badge('ROUTE','HASH-VERIFIED INPUT'),
+        'Only referenced source records are embedded in this page. The offline project includes the full captures and engines.');
+    } else if (state.step===1) {
+      if (!f) {
+        stageShell('No supported local observation.','The engine does not invent an artifact from the published exercise label.',
+          `<div class="notice"><div>${esc(r.known_limit || 'The retained records do not support a finding for the selected baseline observation.')}</div></div>`,badge('NONE','NOT OBSERVED'),
+          'Not observed means this contract could not establish the behavior from these records; it does not mean the exercise did not occur.');
+        return;
+      }
+      const titles={SERVICE_INSTALL:'A service was registered.',SERVICE_CONTROL_ACCESS:'The SCM pipe was accessed.',TASK_CREATE:'A scheduled task was registered.',WMI_EXECUTION:'A WMI-hosted process was created.',WINRM_SESSION:'A remoting host process started.',DCOM_EXECUTION:'A DCOM-launched process was created.',REMOTE_PROCESS:'A process was created.'};
+      let details='';
+      if(f.technique==='SERVICE_INSTALL') details=fact('Service name',fields.ServiceName)+fact('Registered binary',fields.ServiceFileName,true)+fact('Service run-as',fields.ServiceAccount)+fact('Artifact record',artifact?`${artifact.channel} · Event ${artifact.event_id} · line ${artifact.line}`:null);
+      else if(f.technique==='TASK_CREATE') details=fact('Task name',fields.TaskName,true)+fact('Artifact record',artifact?`${artifact.channel} · Event ${artifact.event_id} · line ${artifact.line}`:null);
+      else if(f.technique==='SERVICE_CONTROL_ACCESS') details=fact('Share / pipe',`${fields.ShareName||'IPC$'} / ${fields.RelativeTargetName||'svcctl'}`,true)+fact('Artifact record',artifact?`${artifact.channel} · Event ${artifact.event_id} · line ${artifact.line}`:null);
+      else details=fact('Image',fields.Image,true)+fact('Parent image',fields.ParentImage,true)+fact('Command line',fields.CommandLine,true)+fact('Artifact record',artifact?`${artifact.channel} · Event ${artifact.event_id} · line ${artifact.line}`:null);
+      stageShell(titles[f.technique]||'An action was recorded.','This is the smallest supported claim: a concrete action on the target. Remote attribution is evaluated separately.',
+        `<div class="fact-grid">${fact('Observed target',f.target_host)}${fact('Observed category',names[f.technique]||f.technique)}${details}</div>`,badge('ARTIFACT','LOCAL OBSERVATION'),
+        f.technique==='SERVICE_INSTALL'||f.technique==='TASK_CREATE'?'Registration is not proof that the service or task executed.':'The mechanism label comes from recorded fields; it is not a malicious-intent label.');
+    } else if(state.step===2) {
+      if(!f || rank[f.level]<2 || !logon) {
+        stageShell('The remote session is unproven.','An artifact alone cannot establish which remote network-logon session owns it.',
+          `<div class="notice"><div>${esc((f?.notes||[]).join(' ') || 'No usable, unambiguous 4624 network logon can be joined to this observation in the retained evidence.')}</div></div>${f?`<div class="fact-grid">${fact('Artifact target',f.target_host)}${fact('Artifact logon ID',f.logon_id,true)}</div>`:''}`,badge('ARTIFACT','ATTRIBUTION UNAVAILABLE'),
+          'A logon ID is host-local. The engine also checks the principal and same-host ordering; nearby timestamps alone cannot create this link.');
+        return;
+      }
+      const sid=fields.SubjectUserSid||fields.UserSid||'Not recorded on this process event';
+      const artifactLogon=fields.SubjectLogonId||fields.LogonId||f.logon_id;
+      const artAccount=fields.SubjectUserName || fields.User || f.account;
+      const agreement=(label,a,b)=>`<div class="agreement-row"><span>${esc(label)}</span><span class="mono">${esc(a ?? 'Unavailable')}</span><span class="mono">${esc(b ?? 'Unavailable')}</span></div>`;
+      stageShell('The artifact belongs to this session.',fields.SubjectUserSid?'A successful network logon on the same target provides the session anchor. The SID, account and logon ID agree with the action record.':'A successful network logon anchors the process by host, logon ID and domain-qualified account. This process event does not carry a SID; domain aliases require separate Security evidence.',
+        `<div class="agreement-table"><div class="agreement-row heading"><span>JOIN KEY</span><span>NETWORK LOGON · 4624</span><span>ACTION / PRINCIPAL</span></div>${agreement('Host',logon.host,f.target_host)}${agreement('Logon ID',login.TargetLogonId,artifactLogon)}${agreement('SID',login.TargetUserSid,sid)}${agreement('Account',`${login.TargetDomainName||''}\\${login.TargetUserName||''}`,artAccount)}</div><div class="fact-grid">${fact('Authentication',f.authentication)}${fact('Session',f.logon_id,true)}</div>${(f.alias_refs||[]).length?`<p class="muted">Domain aliases are supported by ${(f.alias_refs||[]).length} successful Security record(s) for this SID; these are included below.</p>`:''}`,badge('SESSION','SESSION ATTRIBUTED'),
+        'Security joins check success, usable identifiers, same-host event ordering and a 60-second window. Process joins use a 120-second collection-time gate.');
+    } else if(state.step===3) {
+      if(!f?.route) {
+        stageShell('The route is not corroborated.','Naming a remote source host requires a matching TCP connection observed on both endpoints, not an IP address seen in one record.',
+          `<div class="notice"><div>${esc(f?.route_gap || 'The retained evidence does not contain a unique, usable two-sided connection for this session.')}</div></div>${f?`<div class="fact-grid">${fact('Supported level',f.level)}${fact('Target',f.target_host)}</div>`:''}`,badge(f?.level||'NONE','NO TWO-SIDED ROUTE'),
+          'A session claim can survive without a route. No multi-hop path or first pivot is inferred.');
+        return;
+      }
+      const route=f.route;
+      const outbound=row().record_lookup[route.outbound.ref], inbound=row().record_lookup[route.inbound.ref];
+      const pair=(label,a,b)=>`<div class="agreement-row"><span>${esc(label)}</span><span class="mono">${esc(a)}</span><span class="mono">${esc(b)}</span></div>`;
+      stageShell('Both hosts recorded the same connection.','The session source endpoint agrees with one outbound and one inbound Sysmon TCP event. Hosts, addresses, ports and direction are all checked.',
+        `<div class="relation"><div><span class="node-label">SOURCE HOST</span><div class="node-name">${esc(route.source_host)}</div><span class="node-endpoint mono">${esc(route.source_ip)}:${esc(route.source_port)}</span></div><span class="join-arrow" aria-label="to">→</span><div><span class="node-label">TARGET HOST</span><div class="node-name">${esc(route.target_host)}</div><span class="node-endpoint mono">${esc(route.target_ip)}:${esc(route.target_port)}</span></div></div><div class="agreement-table"><div class="agreement-row heading"><span>FIELD</span><span>SOURCE RECORD</span><span>TARGET RECORD</span></div>${pair('Source',`${outbound?.fields.SourceIp}:${outbound?.fields.SourcePort}`,`${inbound?.fields.SourceIp}:${inbound?.fields.SourcePort}`)}${pair('Target',`${outbound?.fields.DestinationIp}:${outbound?.fields.DestinationPort}`,`${inbound?.fields.DestinationIp}:${inbound?.fields.DestinationPort}`)}${pair('Initiated',outbound?.fields.Initiated,inbound?.fields.Initiated)}</div>`,badge('ROUTE','ENDPOINTS CORROBORATED'),
+        'The 10-second flow gate uses collection time. It is a matching constraint, not a cross-host causal clock or proof of command execution.');
+    } else {
+      const text=claimText(f);
+      stageShell('Say only what the evidence supports.','The output carries its technique, evidence level and limitations together. The same contract can return a weaker claim when evidence is missing.',
+        `<div class="notice"><div><strong>${esc(text)}</strong></div></div><div class="fact-grid">${fact('Authorization','Unknown · no change-approval or policy source')}${fact('Intent','Not inferred from these records')}${fact('Path scope','One independently attributed session')}${fact('Execution boundary',f?.technique==='SERVICE_INSTALL'?'Service registration; execution unproven':f?.technique==='TASK_CREATE'?'Task registration; execution unproven':'Only the recorded behavior is asserted')}</div>`,badge(f?.level||'NONE',f?.level||'NO SUPPORTED CLAIM'),
+        'Next, remove an event type using “Evidence available” above. Every alternate result was recomputed by the Python engines over the retained original records.');
+    }
+  }
+  function claimText(f) {
+    if(!f) return 'No supported claim for the selected observation in the available evidence.';
+    const what=names[f.technique] || f.technique;
+    if(f.level==='ROUTE') return `${what} on ${f.target_host}, linked to session ${f.logon_id} with the route from ${f.route.source_host} corroborated on both hosts.`;
+    if(f.level==='SESSION') return `${what} on ${f.target_host}, linked to network-logon session ${f.logon_id}; the source route is uncorroborated.`;
+    return `${what} observed on ${f.target_host}; remote-session attribution is unavailable.`;
+  }
+  function renderConclusion(f) {
+    const base=baselineFinding();
+    const applicable=base&&['SERVICE_INSTALL','SERVICE_CONTROL_ACCESS'].includes(base.technique);
+    const observations=variant().strict.observations;
+    const strict=applicable?observations.find(o=>String(o.route?.target_host).toLowerCase()===String(base.target_host).toLowerCase()&&o.identity?.logon_id===base.logon_id):null;
+    $('conclusion-panel').innerHTML = `<p class="eyebrow">CURRENT ENGINE CONCLUSION</p>${badge(f?.level||'NONE')}<h3>${f?esc(names[f.technique]||f.technique):'Selected claim unavailable'}</h3><p class="conclusion-text">${esc(claimText(f))}</p><ul class="boundary-list"><li><strong>Authorization · unknown</strong>No policy or change-approval evidence.</li><li><strong>Intent · not inferred</strong>Observed behavior does not establish malicious intent.</li><li><strong>Scope · this session</strong>No first-pivot or multi-hop path claim.</li></ul>${applicable?`<div class="contract-note"><strong>Strict SCM contract</strong><br>${esc(strict?strict.status.replaceAll('_',' '):'No supported SCM observation in this session.')}<br>Also requires session-attributed svcctl access. It can fail while the general artifact/session contract still holds.</div>`:''}`;
+  }
+  function renderEvidence(f) {
+    const records=focusRecords(f);
+    $('evidence-heading').textContent=state.step===0?'Trace back to source records':'Records behind this step';
+    $('evidence-note').textContent=records.length?`${records.length} cited records · Collection time is shown for inspection, not causal ordering. Open a line to inspect its full contents and hash.`:'No supporting records for this step in the selected observation. The missing evidence is part of the result.';
+    $('evidence-table').innerHTML=records.length?`<table><thead><tr><th>EVENT / ROLE</th><th>RECORDED ON</th><th>COLLECTED AT (UTC)</th><th>SOURCE REFERENCE</th></tr></thead><tbody>${records.map(r=>`<tr><td><span class="mono">${esc(r.event_id)}</span><span class="event-label">${esc(events[r.event_id]||'Identity / supporting event')}</span></td><td class="cell-host">${esc(r.host)}<br><span class="muted">${esc(r.channel)}</span></td><td class="cell-time">${esc(r.collected_at_utc||'Unavailable')}</td><td>${referenceButton(r.ref)}<br><span class="muted mono">${esc(r.record_number==null?'No record number':`Record ${r.record_number}`)}</span></td></tr>`).join('')}</tbody></table>`:'<div class="empty">A gap is shown explicitly. No record is substituted to complete the flow.</div>';
+  }
+  function renderQuality(result) {
+    const q=result.quality || {}, rejects=Object.values(q.unusable_identifiers||{}).reduce((a,b)=>a+Number(b),0);
+    const entries=[...(result.gaps||[]),...(result.conflicts||[]),...(q.rejected_examples||[])];
+    $('quality-panel').innerHTML=`<details><summary>Coverage &amp; data quality · ${number(q.conflicting_event_identities)} conflicting identities · ${number(rejects)} identifier rejections · ${number(result.gaps?.length)} gaps</summary><p>${esc(q.screening?.note||'No screening summary available.')}</p><p>${number(q.flow_records_unusable_for_routes)} flow records could not supply usable route fields. Unusable records are not treated as negative evidence.</p>${entries.length?`<ul>${entries.slice(0,20).map(e=>`<li>${esc(e.reason||e.message||JSON.stringify(e))}</li>`).join('')}</ul>`:''}<p>Some examples are capped for readability; the downloaded analysis JSON retains the engine result. ${esc(DATA.evaluation_limit)}</p></details>`;
+  }
+  function renderLibrary() {
+    const query=$('search-recordings').value.toLowerCase(),tech=$('filter-technique').value;
+    const rows=DATA.rows.map((r,i)=>({...r,index:i})).filter(r=>(!tech||r.expected===tech)&&[r.title,r.dataset_id,r.expected_label].join(' ').toLowerCase().includes(query));
+    $('library-count').textContent=`${rows.length} of ${DATA.rows.length} recordings`;
+    $('recording-grid').innerHTML=rows.length?rows.map(r=>`<article class="panel recording-card"><div class="card-top"><span class="dataset-id mono">${esc(r.dataset_id)}</span>${badge(r.level)}</div><h3>${esc(r.title)}</h3><p>${esc(r.expected_label)}</p><div class="outcome ${r.outcome==='NOT_OBSERVED'?'missing':''}">${r.outcome==='OBSERVED'?'✓ Expected category observed':r.outcome==='NOT_OBSERVED'?'! Expected category not observed':'Additional remote category'}</div><div class="card-bottom"><span>${number(r.result.counts.records)} records · ${r.result.findings.length} findings</span><button class="text-button" data-case="${r.index}">Explore flow →</button></div></article>`).join(''):'<div class="empty">No recordings match these filters.</div>';
+  }
+  function renderMatrix() {
+    $('experiment-matrix').innerHTML=`<table class="matrix"><thead><tr><th>RECORDING</th><th>BASELINE</th>${DATA.ablations.map(a=>`<th>REMOVE<br>${esc(a)}</th>`).join('')}</tr></thead><tbody>${DATA.rows.map((r,i)=>`<tr><td>${esc(r.title)}<small>${esc(r.expected_label)}</small></td><td><button class="${r.level.toLowerCase()}" data-case="${i}" data-variant="baseline">${esc(r.level)}</button></td>${DATA.ablations.map(a=>{const c=r.variants[a];return `<td>${c.removed?`<button class="${c.level.toLowerCase()}" data-case="${i}" data-variant="${esc(a)}" title="${esc(a)}: ${c.removed} records removed; ${esc(c.result.remote_techniques.map(t=>names[t]).join(', ')||'no remote category')}">${esc(c.level)}</button>`:'<span aria-label="Event type absent">—</span>'}</td>`}).join('')}</tr>`).join('')}</tbody></table>`;
+  }
+  function navigate() {
+    const raw=location.hash.slice(1).split('/');
+    const view=['flow','recordings','experiments','analyze'].includes(raw[0])?raw[0]:'flow';
+    state.view=view;
+    if(view==='flow' && raw[1]) {
+      const idx=DATA.rows.findIndex(r=>r.archive===decodeURIComponent(raw[1]));
+      if(idx>=0) setCase(idx,raw[2]?decodeURIComponent(raw[2]):'baseline');
+    }
+    document.querySelectorAll('.view').forEach(el=>el.hidden=el.id!==`view-${view}`);
+    document.querySelectorAll('[data-view]').forEach(el=>{el.classList.toggle('active',el.dataset.view===view);if(el.dataset.view===view)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current')});
+    const titles={flow:['Follow the evidence.','An event shows what happened. A defensible remote-activity claim shows how the records agree.'],recordings:['Explore the recordings.','Fourteen original captures, six exercise categories, and one visible, explained coverage gap.'],experiments:['Test what survives.','Remove a whole event type and inspect the claims that the retained evidence can still support.'],analyze:['Bring your own evidence.','Use the same Python engines to turn a Windows event capture into inspectable, qualified findings.']};
+    $('page-title').textContent=titles[view][0];$('page-lead').textContent=titles[view][1];
+    if(view==='flow')renderFlow();if(view==='recordings')renderLibrary();if(view==='analyze')renderAnalyze();
+  }
+  function goFlow(index, v='baseline') {
+    state.step=v==='baseline'?0:4;
+    setCase(index,v);
+    const hash=`#flow/${row().archive}/${encodeURIComponent(state.variant)}`;
+    if(location.hash===hash)navigate();else location.hash=hash;
+    $('main').focus({preventScroll:true});
+    window.scrollTo({top:0,behavior:'instant'});
+  }
+  function renderAnalyze() {
+    $('local-analysis').hidden=!state.local;
+    $('hosted-analysis-note').hidden=state.local;
+  }
+  async function analyzeFile(file) {
+    if(!state.local || !file)return;
+    if(file.size>100*1024*1024){$('upload-status').textContent='The limit is 100 MB. Choose a smaller capture.';return;}
+    $('capture-file').disabled=true;
+    $('upload-status').textContent=`Analyzing ${file.name} with both Python engines…`;
+    $('upload-result').innerHTML='';
+    try {
+      const response=await fetch('api/analyze',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name)},body:file});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||'Analysis failed.');
+      state.uploaded=data;
+      $('upload-status').textContent=`${data.name} · ${number(data.records)} parsed records · analysis complete`;
+      $('upload-result').innerHTML=`<div class="panel information"><h2>${data.result.findings.length} supported findings</h2><p>General categories: ${esc(data.result.remote_techniques.map(t=>names[t]||t).join(', ')||'none remotely attributed')}.</p><p>Strict SCM contract: <strong>${esc(data.strict.status)}</strong>. This contract evaluates service-control access and installation; it is not a score for WMI, remoting or DCOM.</p><p>Parse issues: ${esc(JSON.stringify(data.integrity.issues))}</p><button class="secondary" data-action="download-upload">Download analysis JSON ↓</button></div><div class="upload-findings">${data.result.findings.map(f=>`<article class="panel upload-finding">${badge(f.level)}<h3>${esc(names[f.technique]||f.technique)}</h3><p>${esc(claimText(f))}</p><p>${esc((f.notes||[]).join(' '))}</p><div class="reference-list">${[...new Set([...(f.evidence||[]).map(e=>e.ref),...(f.alias_refs||[])])].map(ref=>referenceButton(ref,'upload')).join('')}</div></article>`).join('')||'<p class="empty">No supported findings. Review the downloaded gaps and data-quality notes.</p>'}</div>`;
+    } catch(error){$('upload-status').textContent=`Could not analyze capture: ${error.message}`;}
+    finally{$('capture-file').disabled=false;$('capture-file').value='';}
+  }
+  function downloadText(name,text,type='application/json') {
+    const url=URL.createObjectURL(new Blob([text],{type}));
+    const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
+  }
+  function downloadProject() {
+    if(state.local||location.protocol==='file:') {
+      if(state.local)downloadText('START_HERE.txt','You are already running the downloaded local project.\nStart: python3 dashboard.py\nStandalone: dashboard-offline.html\nRebuild: python3 build_dashboard.py\nTests: python3 -m unittest discover -v\n','text/plain');
+      else { $('hosted-analysis-note').hidden=false; location.hash='#analyze'; }
+      return;
+    }
+    const a=document.createElement('a');a.href='downloads/Soliton_Evidence_Dashboard.zip';a.download='Soliton_Evidence_Dashboard.zip';a.click();
+  }
+  async function openRecord(source,ref) {
+    $('record-verification').textContent='';
+    let record=DATA.rows.find(r=>r.archive===source)?.record_lookup[ref];
+    if(!record&&state.local) {
+      try{const response=await fetch(`api/record?source=${encodeURIComponent(source)}&ref=${encodeURIComponent(ref)}`);record=await response.json();if(!response.ok)throw new Error(record.error);}catch(error){record={ref,json:`Record unavailable: ${error.message}`,sha256:''};}
+    }
+    if(!record)record={ref,json:'This reference was not included in the exported record subset.',sha256:''};
+    state.record=record;state.exact=false;
+    $('record-title').textContent=`${events[record.event_id]||'Original Windows event'}${record.event_id!=null?' · '+record.event_id:''}`;
+    $('record-ref').textContent=ref;
+    $('record-hash').textContent=record.sha256||record.record_sha256||'Unavailable';
+    $('record-facts').innerHTML=[fact('Recorded on',record.host),fact('Channel',record.channel),fact('Record number',record.record_number),fact('Collection time (UTC)',record.collected_at_utc)].join('');
+    $('record-format').disabled=!record.raw_line;
+    $('record-save').disabled=!record.raw_line;
+    $('record-format').textContent='Show exact source line';
+    $('record-json').textContent=record.json;
+    $('record-dialog').showModal();
+    if(record.raw_line && window.crypto?.subtle) {
+      try{const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(record.raw_line));const hash=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');if(state.record===record)$('record-verification').textContent=hash===(record.sha256||record.record_sha256)?'✓ Original line hash verified':'Hash mismatch — inspect the source export';}catch{if(state.record===record)$('record-verification').textContent='Hash was checked by the Python exporter.';}
+    } else if(record.raw_line)$('record-verification').textContent='Hash checked by Python at export.';
+  }
+  document.addEventListener('click',event=>{
+    const target=event.target.closest('button');if(!target)return;
+    if(target.dataset.step!=null){state.step=Number(target.dataset.step);renderFlow();}
+    if(target.dataset.case!=null)goFlow(Number(target.dataset.case),target.dataset.variant||'baseline');
+    if(target.dataset.ref)openRecord(target.dataset.source,target.dataset.ref);
+    if(target.dataset.action==='reset'){state.variant='baseline';history.replaceState(null,'',`#flow/${row().archive}/baseline`);renderFlow();}
+    if(target.dataset.action==='download-upload'&&state.uploaded)downloadText('capture-analysis.json',JSON.stringify(state.uploaded,null,2));
+  });
+  $('case-select').addEventListener('change',()=>{state.step=0;goFlow(Number($('case-select').value));});
+  $('finding-select').addEventListener('change',()=>{state.findingIndex=Number($('finding-select').value);renderFlow();});
+  $('variant-select').addEventListener('change',()=>{state.variant=$('variant-select').value;history.replaceState(null,'',`#flow/${row().archive}/${encodeURIComponent(state.variant)}`);renderFlow();});
+  $('previous-step').addEventListener('click',()=>{state.step=Math.max(0,state.step-1);renderFlow();});
+  $('next-step').addEventListener('click',()=>{state.step=Math.min(4,state.step+1);renderFlow();});
+  $('search-recordings').addEventListener('input',renderLibrary);
+  $('filter-technique').addEventListener('change',renderLibrary);
+  $('present-button').addEventListener('click',()=>{const active=document.body.classList.toggle('presenting');$('present-button').setAttribute('aria-pressed',String(active));$('present-button').textContent=active?'Exit presentation ✕':'Presentation view ↗';});
+  $('export-result').addEventListener('click',()=>downloadText(`${row().dataset_id}-${state.variant==='baseline'?'baseline':'removal'}-analysis.json`,JSON.stringify({dataset:row().dataset_id,experiment:state.variant,engine_sha256:DATA.engine_sha256,source:row().source,...variant()},null,2)));
+  $('download-project').addEventListener('click',downloadProject);$('download-local').addEventListener('click',downloadProject);
+  $('capture-file').addEventListener('change',()=>analyzeFile($('capture-file').files[0]));
+  for(const name of ['dragover','dragleave','drop'])$('drop-zone').addEventListener(name,event=>{event.preventDefault();$('drop-zone').classList.toggle('dragover',name==='dragover');if(name==='drop')analyzeFile(event.dataTransfer.files[0]);});
+  $('record-close').addEventListener('click',()=>$('record-dialog').close());
+  $('record-dialog').addEventListener('click',event=>{if(event.target===$('record-dialog')){const r=$('record-dialog').getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)$('record-dialog').close();}});
+  $('record-format').addEventListener('click',()=>{state.exact=!state.exact;$('record-json').textContent=state.exact?state.record.raw_line:state.record.json;$('record-format').textContent=state.exact?'Show formatted JSON':'Show exact source line';});
+  $('record-save').addEventListener('click',()=>downloadText(`event-line-${String(state.record.ref).split(':L').pop()}.ndjson`,state.record.raw_line,'application/x-ndjson'));
+  window.addEventListener('hashchange',navigate);
+  initialize();
+})();

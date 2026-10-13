@@ -1,10 +1,29 @@
 # Changes
 
+## Evidence workspace: guided dashboard over v5 (current)
+
+- Replaced the overview/iframe entry point with a five-step reasoning flow.
+  Each step uses the selected finding and original fields; missing evidence
+  remains visible rather than completing an assumed path.
+- Recording search, all 57 Python-computed removal experiments, a presentation
+  view, analysis JSON download, exact source-line viewing and hash verification.
+- `build_dashboard.py` exports a hash-verified snapshot for private hosting and
+  a self-contained `dashboard-offline.html`. No detector is rewritten in JS.
+- The local server keeps real upload analysis, verifies the pinned sources,
+  refreshes stale engine snapshots, and preserves ZIP member paths. Duplicate
+  event-member names and nonpositive upload lengths are refused.
+- The strict SCM and general contracts are explained separately. Process
+  events without SIDs are shown as such; identity aliases cite Security records.
+- Generated snapshot/standalone files are ignored by Git and rebuilt locally.
+- Added export/provenance tests and Node-only interaction contract checks.
+  Core reconstruction algorithms and recorded-data conclusions are unchanged.
+
+
 ## v5.1: published as LMTrace
 
 - Project renamed LMTrace; titles, dashboard and README updated for a public repository.
 
-## v5: local dashboard (current)
+## v5: local dashboard
 
 - `dashboard.py` plus `web/`: an offline web app (standard library only) with
   Overview, Recordings, Analyze a capture and Deep dive views. Engines and

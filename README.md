@@ -8,8 +8,8 @@ from which source host, and how far the evidence actually reaches. Every claim
 carries an evidence level (Artifact, Session, Route) and links back to the
 original records.
 
-It runs on the Python standard library alone, offline, with a local dashboard
-and two static reports:
+It runs on the Python standard library alone, offline, with a **guided concept-flow
+dashboard** and two static reports:
 
 - **Scorecard** (`results/scorecard.html`): one engine run over 14 recorded
   OTRF exercises covering six techniques (service install, service-control
@@ -20,43 +20,73 @@ and two static reports:
 
 ## Start in under a minute
 
-Clone the repository, open a terminal inside `lmtrace`, and run:
+Clone the repository and open a terminal inside `lmtrace`, then run:
 
 ```bash
-python3 demo.py
+python3 dashboard.py
 ```
 
-On Windows, use `py -3 demo.py` if `python3` is unavailable.
-Open `results/scorecard.html` first, then `results/report.html`. Pre-generated
-copies of both are included.
-Python **3.10 or newer** is required. There are **no pip dependencies**, no SIEM,
-no administrator permissions, and no network connection needed to run it.
-The folder needs about 25 MB of disk space. A full run takes a few seconds.
+The first launch builds the evidence snapshot (several seconds); later launches
+reuse it. It also creates **`dashboard-offline.html`** for a self-contained
+explorer that needs no Python server.
 
-## Dashboard
+On Windows, use `py -3 dashboard.py` if `python3` is unavailable. Python **3.10
+or newer** is required for the engines. There are **no pip dependencies**, no
+SIEM, no administrator permissions, and no network connection needed to run it.
+The folder needs about 50 MB of disk space including the standalone dashboard.
+To regenerate the detailed reports separately, run `python3 demo.py`.
+
+## Dashboard: the concept flow
+
+After the first launch or `python3 build_dashboard.py`, open **`dashboard-offline.html`** directly to explore the bundled evidence in one
+self-contained page. It works without Python or internet access. For new-capture
+analysis, start the local server:
 
 ```bash
 python3 dashboard.py        # opens http://127.0.0.1:8765/ in your browser
 ```
 
-A local web app over the same engines, using the Python standard library only.
-It works offline.
+On Windows, use `py -3 dashboard.py` if needed. No pip packages are required.
 
-- **Overview:** one evidence ladder per recording (Artifact, Session, Route),
-  the scorecard table and the evidence-removal matrix.
-- **Recordings:** every finding of one recording with its route or the stated
-  gap, notes, contradictions and rejected records. Each record reference opens
-  the original JSON line and its hash.
-- **Analyze a capture:** choose or drop an OTRF NDJSON file or ZIP; both
-  engines run in memory and the file is not saved.
-- **Deep dive:** the record-by-record report, embedded.
+- **Concept flow:** Collect → Observe → Attribute → Corroborate → Qualify.
+  Each step explains a join using real fields from the selected session, shows
+  the current engine conclusion, and links the original supporting records.
+  This is a reasoning flow, not a cross-host execution timeline.
+- **Recording library:** search and filter all 14 captures. Inspect independent
+  observations, the WinRM route gap, and the explained ShellWindows limit.
+- **Evidence removal:** all 57 whole-event-type removals are computed by Python.
+  Open a matrix cell or use the recording's evidence selector. Removing 4624
+  leaves a local installation artifact; removing Sysmon 3 leaves a Session;
+  removing 4697 can leave SCM access without installation.
+- **Record inspection:** formatted JSON, the exact original NDJSON line, and
+  its SHA-256. Large integers stay in text. The browser can verify the line hash
+  where Web Crypto is available. Download source lines and analysis JSON.
+- **Analyze a capture:** available with the local server. Choose an OTRF NDJSON
+  file or ZIP; both engines run in memory and the file is not saved.
+- **Presentation view:** hides workspace navigation and summary metrics so the
+  reasoning and evidence remain the focus.
 
-Safety choices: the server binds to `127.0.0.1` only; it refuses requests whose
-`Host` or `Origin` is not the dashboard (DNS-rebinding and cross-site POST
-protection); uploads are capped at 100 MB and checked for ZIP member count and
-expanded size before reading; the page runs under a strict
-Content-Security-Policy with no inline script, and the client escapes all
-text. `test_dashboard.py` covers these guards.
+The hosted and standalone versions are explorers of **Python-computed snapshots**,
+not browser implementations of the detector. The full inputs and engines are in
+this project. Rebuild the snapshot and standalone HTML after code or data changes:
+
+```bash
+python3 build_dashboard.py
+python3 -m unittest discover -v
+node test_dashboard_ui.cjs   # optional Node-only interaction contract checks
+```
+
+`build_dashboard.py` verifies every pinned archive/member hash, recomputes both
+engines for the removal experiments, and embeds only referenced records. The
+local server verifies inputs at startup and rebuilds when engine hashes change.
+The general and strict SCM contracts remain distinct: the strict one also needs
+session-attributed `svcctl` access, so removing 5145 can invalidate it while the
+general 4697 installation claim still has Session or Route support.
+
+Local-server guards: loopback-only bind, Host/Origin checks, a 100 MB upload cap,
+ZIP member and expanded-size limits, strict CSP, and escaped text. ZIP member
+paths are retained to prevent ambiguous file/line references. Duplicate member
+names are refused. No telemetry is uploaded by the hosted dashboard.
 
 ## Scorecard: one engine, 14 recordings
 
@@ -263,7 +293,8 @@ Microsoft event definitions:
 | `reconstruct.py` / `route_for` | Tie a session to one TCP connection seen on both hosts, on any port |
 | `scorecard.py` / `ablate` | Withhold one evidence type at a time and check claims only weaken |
 | `scorecard_report.py` | Render the scorecard page |
-| `dashboard.py` | Local web app: routes, upload analysis in memory, Host/Origin guard, size limits |
+| `dashboard.py` | Local web app: snapshot preparation, upload analysis, original-line lookup and server guards |
+| `build_dashboard.py` | Recompute both engines over removals, verify sources, export snapshot and standalone HTML |
 | `web/dashboard.js` | Presentation only; every number and decision comes from the Python engines |
 | `test_reconstruct.py` | Mutation tests on real records for each technique, plus the ablation property |
 | `test_demo.py` | Verify original traces, reject conflicting evidence, check reproducible outputs |
@@ -275,7 +306,9 @@ displayed as text; no command contained in telemetry is executed.
 ## Verify it yourself
 
 ```bash
-python3 -m unittest -v test_demo test_reconstruct test_hardening test_v4 test_dashboard   # 64 tests
+python3 build_dashboard.py
+python3 -m unittest discover -v   # 71 tests
+node test_dashboard_ui.cjs        # 355 interaction-state checks, no browser required
 python3 scorecard.py          # print the scorecard to the terminal
 python3 demo.py --case create --without-logons --out results/ablation
 ```

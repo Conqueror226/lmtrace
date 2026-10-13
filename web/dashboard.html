@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LMTrace</title>
+<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<nav class="rail" aria-label="Views">
+  <div class="brand">LMTrace<span class="brand-sub">Remote execution evidence</span></div>
+  <a href="#overview" data-view="overview">Overview</a>
+  <a href="#recordings" data-view="recordings">Recordings</a>
+  <a href="#analyze" data-view="analyze">Analyze a capture</a>
+  <a href="#deep-dive" data-view="deep-dive">Deep dive</a>
+  <p class="rail-note">Runs on this computer. Nothing is sent anywhere.</p>
+</nav>
+
+<main id="main">
+  <section id="view-overview" class="view" hidden>
+    <header class="page-head">
+      <h1>Remote execution across <span id="ov-count">14</span> recorded exercises</h1>
+      <p class="lead" id="ov-verdict">Loading the scorecard…</p>
+    </header>
+    <figure class="rack-figure">
+      <div class="rack" id="ov-rack" role="list"></div>
+      <figcaption class="ladder-legend">
+        <span><i class="seg l1"></i>Artifact: recorded on the target, no remote session shown</span>
+        <span><i class="seg l2"></i>Session: tied to a network logon on that host</span>
+        <span><i class="seg l3"></i>Route: that logon matches one connection recorded on both endpoints</span>
+      </figcaption>
+    </figure>
+    <p class="facts" id="ov-facts"></p>
+
+    <h2>Recordings</h2>
+    <p class="section-lead">The expected category comes from each dataset's published title and is read only by the scorer. Outcomes compare technique categories; the sessions, accounts and endpoints are shown for review, not independently verified.</p>
+    <div class="table-wrap"><table class="grid" id="ov-table"></table></div>
+
+    <h2>Evidence removal</h2>
+    <p class="section-lead" id="ov-ablation-lead"></p>
+    <div class="table-wrap"><table class="matrix" id="ov-matrix"></table></div>
+  </section>
+
+  <section id="view-recordings" class="view" hidden>
+    <div class="split">
+      <aside class="picker" id="rec-list" aria-label="Recordings"></aside>
+      <div class="detail" id="rec-detail"></div>
+    </div>
+  </section>
+
+  <section id="view-analyze" class="view" hidden>
+    <header class="page-head">
+      <h1>Analyze a capture</h1>
+      <p class="lead">Choose an OTRF-style export: one Windows event per line as JSON, or a ZIP containing such files. Both engines run here, in memory; the file is not saved.</p>
+    </header>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".json,.jsonl,.ndjson,.zip">
+      <span class="drop-title">Drop a file here or choose one</span>
+      <span class="drop-sub">.json, .jsonl, .ndjson or .zip, up to 100 MB</span>
+    </label>
+    <p class="status" id="an-status" role="status"></p>
+    <div id="an-result"></div>
+  </section>
+
+  <section id="view-deep-dive" class="view" hidden>
+    <header class="page-head">
+      <h1>Deep dive: one service-creation session</h1>
+      <p class="lead">The strict contract, record by record. <a href="/deep-dive" target="_blank" rel="noopener">Open in its own tab</a></p>
+    </header>
+    <iframe id="deep-frame" title="Deep-dive report" loading="lazy"></iframe>
+  </section>
+</main>
+
+<dialog id="record-dialog" aria-labelledby="record-title">
+  <div class="dialog-head"><h3 id="record-title">Original record</h3><button type="button" id="record-close">Close</button></div>
+  <p class="mono small" id="record-ref"></p>
+  <p class="mono small" id="record-hash"></p>
+  <pre id="record-json"></pre>
+</dialog>
+<script src="/dashboard.js"></script>
+</body>
+</html>

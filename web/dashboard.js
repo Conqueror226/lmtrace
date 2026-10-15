@@ -1,5 +1,7 @@
 'use strict';
 (() => {
+  // build_dashboard.py already ran both Python engines for every removal variant.
+  // This object comes from generated dashboard-data.js (or its offline inline copy).
   const DATA = window.EVIDENCE_DATA;
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -18,19 +20,37 @@
     $('stage-panel').innerHTML = '<h2>Dashboard data is unavailable.</h2><p>Run <code>python3 build_dashboard.py</code> in the project folder and reload this page.</p>';
     return;
   }
+  // Track the selected recording, baseline observation, evidence variant, and UI state.
+  // variant is an exact data key, e.g. 'baseline' or 'Sysmon 3 connection'.
   const state = {caseIndex:0, findingIndex:0, variant:'baseline', step:0, view:'flow', local:false, uploaded:null, record:null, exact:false};
+  // Read the selected capture; changing the variant does not change this row.
   const row = () => DATA.rows[state.caseIndex];
+  // Use the requested precomputed result if it exists; otherwise use baseline.
+  // ?. safely returns undefined when a key is absent. The ternary chooses a value.
   const variant = () => row().variants[state.variant]?.result ? row().variants[state.variant] : row().variants.baseline;
+  // The observation selector always indexes baseline, so removals can be compared
+  // against the same original observation even when findings disappear or reorder.
   const baselineFinding = () => row().result.findings[state.findingIndex] || null;
+  // Match display findings by target host (case-insensitive) and host-local logon ID.
+  // This is UI alignment, not the engine's full identity/attribution validation.
   const sameSession = (a,b) => a && b && String(a.target_host).toLowerCase() === String(b.target_host).toLowerCase() && a.logon_id === b.logon_id;
+  // Find the surviving counterpart of the selected baseline observation.
   function currentFinding() {
+    // Start with the original observation selected by the user.
     const base = baselineFinding();
+    // No baseline observation means there is nothing to align with a variant.
     if (!base) return null;
+    // Read actual findings computed by Python for the current evidence choice.
     const findings = variant().result.findings;
+    // Check whether a candidate shares at least one artifact source reference.
     const overlap = f => (f.artifact_refs || []).some(r => (base.artifact_refs || []).includes(r));
+    // Prefer the same session, technique, and overlapping artifact evidence.
     return findings.find(f => sameSession(f,base) && f.technique === base.technique && overlap(f))
+      // Otherwise allow a surviving related technique sharing an artifact.
       || findings.find(f => sameSession(f,base) && overlap(f))
+      // Otherwise keep the same session and technique without requiring overlap.
       || findings.find(f => sameSession(f,base) && f.technique === base.technique)
+      // Finally allow another finding in this session; report null if none survives.
       || findings.find(f => sameSession(f,base)) || null;
   }
   const badge = (level, label=level) => `<span class="tag ${esc(String(level).toLowerCase())}">${esc(label)}</span>`;
@@ -39,27 +59,48 @@
   function referenceButton(ref, source=row().archive, label='') {
     return `<button class="record-link" data-ref="${esc(ref)}" data-source="${esc(source)}">${esc(label || refShort(ref))} ↗</button>`;
   }
+  // Look up only the source records cited by the CURRENT computed finding.
+  // The shared lookup also contains baseline-only records; their presence there
+  // does not mean they still support a finding after evidence removal.
   function recordsFor(f) {
+    // A missing finding has no supporting records to display.
     if (!f) return [];
+    // Combine direct evidence references with any domain-alias evidence.
     const refs = [...(f.evidence || []).map(e=>e.ref), ...(f.alias_refs || [])];
+    // Deduplicate references, resolve their records, and discard missing lookups.
     return [...new Set(refs)].map(ref => row().record_lookup[ref]).filter(Boolean);
   }
+  // Choose which of those supporting records are relevant to the visible step.
   function focusRecords(f) {
+    // Begin with the current finding's citations, not every event in the lookup.
     const records = recordsFor(f);
+    // For Observe, show only records listed as artifacts.
     if (state.step === 1) return records.filter(r=>(f.artifact_refs || []).includes(r.ref));
+    // For Attribute, show logons, artifact records, and identity-alias evidence.
     if (state.step === 2) return records.filter(r=>String(r.event_id)==='4624' || (f.artifact_refs || []).includes(r.ref) || (f.alias_refs || []).includes(r.ref));
+    // For Corroborate, show cited connection/logon records; removed connections are absent.
     if (state.step === 3) return records.filter(r=>String(r.event_id)==='3' || String(r.event_id)==='4624');
+    // For the remaining steps, show all citations of the current finding.
     return records;
   }
+  // Choose a useful baseline observation when opening a recording.
   function pickDefaultFinding() {
+    // Read this recording's full-data findings.
     const findings = row().result.findings;
+    // Prefer its expected exercise category supported at SESSION or ROUTE level.
     const preferred = findings.findIndex(f=>f.technique===row().expected && rank[f.level]>=2);
+    // Use that position when found; otherwise use the first observation.
     state.findingIndex = preferred>=0 ? preferred : 0;
   }
+  // Open a recording with a requested variant, usually the full-data baseline.
   function setCase(index, v='baseline') {
+    // Clamp the requested recording index to the available range.
     state.caseIndex = Math.max(0,Math.min(DATA.rows.length-1,index));
+    // Reject a variant without a computed result, such as an absent event type.
     state.variant = row().variants[v]?.result ? v : 'baseline';
+    // Select a baseline observation to follow through this removal experiment.
     pickDefaultFinding();
+    // Draw the recording and its selected precomputed result.
     renderFlow();
   }
   function initialize() {
@@ -71,6 +112,8 @@
       [`${s.ablation_monotonic}<em> / ${s.ablation_runs}</em>`,'Removal checks passed','Whole event types withheld']
     ].map(([value,label,sub])=>`<div class="metric"><div class="metric-value">${value}</div><div class="metric-label"><strong>${esc(label)}</strong>${esc(sub)}</div></div>`).join('');
     $('case-select').innerHTML = DATA.rows.map((r,i)=>`<option value="${i}">${esc(r.title)}</option>`).join('');
+    // Build the evidence selector using the same names as Python's ABLATIONS.
+    // The option VALUE is 'Sysmon 3 connection'; only its label adds 'Remove '.
     $('variant-select').innerHTML = '<option value="baseline">Baseline · all records</option>' + DATA.ablations.map(a=>`<option value="${esc(a)}">Remove ${esc(a)}</option>`).join('');
     const unique = [...new Set(DATA.rows.map(r=>r.expected))];
     $('filter-technique').innerHTML += unique.map(t=>`<option value="${esc(t)}">${esc(names[t])}</option>`).join('');
@@ -88,26 +131,46 @@
       }).catch(()=>renderAnalyze());
     } else { $('download-project').textContent='Standalone · works offline';$('download-project').disabled=true;renderAnalyze(); }
   }
+  // Refresh the flow after a recording, observation, variant, or step changes.
   function renderFlow() {
+    // Read the capture, saved variant, surviving finding, and baseline comparison.
     const r = row(), v = variant(), f = currentFinding(), base = baselineFinding();
+    // Synchronize the recording selector with state.
     $('case-select').value = String(state.caseIndex);
+    // Build observation options from baseline, preserving a stable comparison point.
     $('finding-select').innerHTML = r.result.findings.length ? r.result.findings.map((item,i)=>`<option value="${i}">${esc(names[item.technique] || item.technique)} · ${esc(item.logon_id || 'no session')}</option>`).join('') : '<option value="0">No supported observation</option>';
+    // Keep the chosen baseline observation selected.
     $('finding-select').value = String(state.findingIndex);
+    // Disable observation selection when baseline has no findings.
     $('finding-select').disabled = !r.result.findings.length;
+    // Update removal-option availability for the current recording.
     for (const option of $('variant-select').options) {
+      // Disable absent event types; baseline is always available.
       if (option.value !== 'baseline') option.disabled = !r.variants[option.value]?.removed;
     }
+    // Show the evidence choice currently stored in state.
     $('variant-select').value = state.variant;
+    // Show the removed count and warn if the original technique no longer survives.
     $('experiment-note').innerHTML = state.variant !== 'baseline' ? `<div class="notice"><span aria-hidden="true">−</span><div class="grow"><strong>${esc(state.variant)} withheld.</strong> ${number(v.removed)} records removed from the full capture. The remaining records were analyzed again by both Python engines.${base&&(!f||f.technique!==base.technique)?`<br>The selected ${esc(names[base.technique])} claim no longer survives; ${f?esc(names[f.technique])+' remains in this session.':'no related finding remains.'}`:''}</div><button class="secondary" data-action="reset">Restore baseline</button></div>` : '';
+    // Mark stages available from the saved finding: artifact, session rank, and route.
     const availability = [true,!!f,rank[f?.level]>=2,!!f?.route,true];
+    // Render the five stage buttons with unavailable evidence visibly marked.
     $('flow-steps').innerHTML = steps.map((s,i)=>`<button class="step ${i===state.step?'active':''} ${availability[i]?'':'missing'}" data-step="${i}" aria-pressed="${i===state.step}"><span class="step-number">${i+1}</span><strong>${s.name}</strong><small>${availability[i]?esc(s.short):'Evidence unavailable'}</small></button>`).join('');
+    // Draw the active stage using this finding, including its route gap if any.
     renderStage(f);
+    // Display the finding level and its bounded claim.
     renderConclusion(f);
+    // Display only the current finding citations relevant to the active step.
     renderEvidence(f);
+    // Display quality and gaps from this variant, not the baseline result.
     renderQuality(v.result);
+    // Prevent moving before the first stage.
     $('previous-step').disabled=state.step===0;
+    // Prevent moving beyond the last stage.
     $('next-step').disabled=state.step===4;
+    // Use a completion label on the last stage.
     $('next-step').textContent=state.step===4?'Flow complete ✓':'Next step →';
+    // Update the displayed stage number and description.
     $('step-caption').textContent=`Step ${state.step+1} of 5 · ${steps[state.step].short}`;
   }
   function stageShell(title, description, content, status, note='') {
@@ -152,6 +215,8 @@
         `<div class="agreement-table"><div class="agreement-row heading"><span>JOIN KEY</span><span>NETWORK LOGON · 4624</span><span>ACTION / PRINCIPAL</span></div>${agreement('Host',logon.host,f.target_host)}${agreement('Logon ID',login.TargetLogonId,artifactLogon)}${agreement('SID',login.TargetUserSid,sid)}${agreement('Account',`${login.TargetDomainName||''}\\${login.TargetUserName||''}`,artAccount)}</div><div class="fact-grid">${fact('Authentication',f.authentication)}${fact('Session',f.logon_id,true)}</div>${(f.alias_refs||[]).length?`<p class="muted">Domain aliases are supported by ${(f.alias_refs||[]).length} successful Security record(s) for this SID; these are included below.</p>`:''}`,badge('SESSION','SESSION ATTRIBUTED'),
         'Security joins check success, usable identifiers, same-host event ordering and a 60-second window. Process joins use a 120-second collection-time gate.');
     } else if(state.step===3) {
+      // Python returns route: null when retained evidence cannot corroborate a route.
+      // Remove Sysmon 3 reaches this branch for the SharpSC Create example.
       if(!f?.route) {
         stageShell('The route is not corroborated.','Naming a remote source host requires a matching TCP connection observed on both endpoints, not an IP address seen in one record.',
           `<div class="notice"><div>${esc(f?.route_gap || 'The retained evidence does not contain a unique, usable two-sided connection for this session.')}</div></div>${f?`<div class="fact-grid">${fact('Supported level',f.level)}${fact('Target',f.target_host)}</div>`:''}`,badge(f?.level||'NONE','NO TWO-SIDED ROUTE'),
@@ -171,10 +236,12 @@
         'Next, remove an event type using “Evidence available” above. Every alternate result was recomputed by the Python engines over the retained original records.');
     }
   }
+  // Turn the saved finding into wording; this function never assigns its level.
   function claimText(f) {
     if(!f) return 'No supported claim for the selected observation in the available evidence.';
     const what=names[f.technique] || f.technique;
     if(f.level==='ROUTE') return `${what} on ${f.target_host}, linked to session ${f.logon_id} with the route from ${f.route.source_host} corroborated on both hosts.`;
+    // Retain session attribution while explicitly stating that its route is uncorroborated.
     if(f.level==='SESSION') return `${what} on ${f.target_host}, linked to network-logon session ${f.logon_id}; the source route is uncorroborated.`;
     return `${what} observed on ${f.target_host}; remote-session attribution is unavailable.`;
   }
@@ -289,7 +356,17 @@
   });
   $('case-select').addEventListener('change',()=>{state.step=0;goFlow(Number($('case-select').value));});
   $('finding-select').addEventListener('change',()=>{state.findingIndex=Number($('finding-select').value);renderFlow();});
-  $('variant-select').addEventListener('change',()=>{state.variant=$('variant-select').value;history.replaceState(null,'',`#flow/${row().archive}/${encodeURIComponent(state.variant)}`);renderFlow();});
+  // Run this handler when the user changes the Evidence available dropdown.
+  $('variant-select').addEventListener('change',()=>{
+    // Save the option's data key, e.g. 'Sysmon 3 connection' (without 'Remove ').
+    state.variant=$('variant-select').value;
+    // Update the URL fragment so the recording/variant can be reopened by link.
+    // replaceState changes history without reloading the page or firing hashchange.
+    history.replaceState(null,'',`#flow/${row().archive}/${encodeURIComponent(state.variant)}`);
+    // Read the precomputed variant and repaint the current stage and conclusion.
+    // No Python call, API request, or event removal happens in this handler.
+    renderFlow();
+  });
   $('previous-step').addEventListener('click',()=>{state.step=Math.max(0,state.step-1);renderFlow();});
   $('next-step').addEventListener('click',()=>{state.step=Math.min(4,state.step+1);renderFlow();});
   $('search-recordings').addEventListener('input',renderLibrary);
